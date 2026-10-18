@@ -6,7 +6,7 @@ The tool adapter lives with other tools in `server/agent/tool/tools/workflow.ts`
 OpenChart imports no V1 implementation.
 
 An authored workspace file imports only `@openchart/workflow`, which
-supplies Effect, Schema, `defineWorkflow`, `agent`, `parallel`, `phase`, `textPrompt`, and prompt/result
+supplies Effect, Schema, `defineWorkflow`, `agent`, `parallel`, `phase`, `question`, `textPrompt`, and prompt/result
 types. The program owns its argument schema and control flow; its workspace and
 file path own identity. Shipped templates also import `@openchart/workflow`; ESLint
 prohibits other imports, dynamic loading, and ambient I/O globals for those programs. The
@@ -276,6 +276,29 @@ speakers in one phase per round, followed by synthesis. Conditional follow-up
 phases appear only when requested; the workflows retain their prompts, outputs,
 model selection, call order and failure policy.
 
+## Human questions and escalation
+
+`question({questions})` asks the user a structured batch through the invocation's
+`Workflow.Service` and the existing `Question.Service`. It waits for answers or an
+explicit skip in the calling Session, without creating a User message, Run or
+child Session. Question ownership validates answer IDs, choices and cardinality.
+Interruption removes the pending request before the workflow settles. Waiting
+uses no child-agent concurrency permit, so a question can unblock active children.
+Calling the primitive without a workflow host fails with `Workflow.ExecutionError`;
+host delivery failures use the same error type.
+
+The authoring primitive owns its `Workflow.question` span and publishes snapshots
+after the span opens and after it ends, including cancellation. An enclosing
+`phase("adjudicate", ...)` stays running while human input is pending. The host
+only delegates to the calling Session's question service. `QuestionInput`,
+`QuestionReply`, `ProviderQuestion` and `ExecutionError` are available from the
+public authoring API.
+
+A workflow can pause for a bounded decision or return an escalation packet for
+open-ended discussion. A skipped or declined adjudication never authorizes the
+implementation phase. These are process-local waits, not durable resumable jobs;
+an interrupted workflow is not replayed automatically.
+
 ## Tracing
 
 `agent()`, `parallel()` and `phase()` automatically open Effect spans in the authoring API. Workflow
@@ -403,25 +426,58 @@ workflow. All stages use schema-constrained outputs with no implicit repair.
 `/thesis-killer <thesis>` and `/hypothesis-race <question>` compile their respective
 WorkflowParts without executing them.
 
-`workflows/plan-implement.workflow.ts` accepts `{idea, maxRounds}`, a positive
-integer revision bound. Two planners draft independent, repository-grounded
-plans: the parent prompt model and one other frontier provider. In a
-two-planner run the planners cross-critique each other through their own
-continued Sessions; a neutral arbiter then reconciles the plans and classifies
-each disagreement as a technical defect or a fork the idea does not settle.
-While blocking defects remain and rounds are left, the planners revise their
-continued Sessions and the arbiter re-reconciles. Forks, defects surviving the
-bound, or irreversible surfaces — a nonempty `publicContracts` list or planned
-paths matching schemas, migrations, contracts, or resources, screened
-deterministically — return an adjudication packet instead of implementing. A
-failing second planner degrades to solo planning under adversarial arbiter
-review and is reported in the result notes. Otherwise the arbiter compiles a
-self-contained execution spec, a tier-3 implementer builds and tests it, and a
-verifier running the parent model classifies each failure as an execution or
-plan error; one execution retry continues the implementer Session, and plan
-failures or exhausted attempts escalate.
+`workflows/plan-implement.workflow.ts` accepts `{idea, maxRounds}`, with a
+nonempty idea and positive integer debate bound. Independent Codex and Claude Code
+planners use tier 4. Each cross-critiques the other plan on its own continued
+Session. Debate runs only for blocking technical defects: each planner receives
+only the opposing critique's blocking defects against its own plan, then both
+re-critique the revised plans. Normative forks and nonblocking issues are not
+misrepresented as technical blockers.
+
+A Codex distiller creates an agreed spine. Unresolved blocking defects return an
+`adjudication_required` escalation immediately, preserving both planner Sessions
+and the spine. With no blockers, design forks and high-impact surfaces instead
+pause in `question()`: one choice per fork and, when needed, one explicit approval
+for migrations, database definitions, schemas, contracts, shared model protocol,
+package manifests or declared public contracts. Surface reasons use readable
+labels, and contracts from either plan remain triggers even when omitted by the
+spine. A skip, missing fork answer or declined confirmation returns the packet
+before spec compilation or implementation.
+
+Answered decisions preserve each original fork ID; generated question IDs only
+route answers. `irreversibleConfirmed` is true only when irreversible surfaces
+were present and approved. The distiller continues its Session to compile the
+execution spec with those decisions. A tier-3 Codex implementer builds it, and a
+tier-4 Claude Code verifier independently checks the result. An `execution_failure`
+gets one retry, continuing both implementer and verifier Sessions; `plan_failure`
+or an exhausted retry returns `verification_failed` with the reports and Sessions.
+Both configured planner providers must be available; provider failures propagate.
+The model constants are editable in the workspace template.
+
+```mermaid
+flowchart TD
+    Plan[Independent plans] --> Critique[Cross-critique]
+    Critique --> Defects{Blocking defects and rounds left?}
+    Defects -->|Yes| Revise[Targeted revisions and re-critique]
+    Revise --> Defects
+    Defects -->|No| Distill[Distill agreed spine]
+    Distill --> Unresolved{Blocking defects remain?}
+    Unresolved -->|Yes| Escalate[Return adjudication packet]
+    Unresolved -->|No| Discrete{Forks or irreversible surfaces?}
+    Discrete -->|Yes| Ask[question in the calling Session]
+    Ask -->|Skipped, incomplete or declined| Escalate
+    Ask -->|Answered and approved| Spec[Compile execution spec]
+    Discrete -->|No| Spec
+    Spec --> Implement[Implement and independently verify]
+    Implement -->|Pass| Done[Return implemented result]
+    Implement -->|Execution failure, one retry| Implement
+    Implement -->|Plan failure or retry exhausted| Failed[Return verification failure]
+```
 
 `/plan-implement <maxRounds> <idea>` uses `$1 $2` to build this WorkflowPart.
+Templates seed missing files; startup preserves existing workspace copies. To
+adopt a revised shipped template in an existing workspace, update its file
+explicitly while preserving any local edits.
 
 The generic control-flow semantics follow V1. This slice does not port profile
 lifecycle plugins, TaskTool,

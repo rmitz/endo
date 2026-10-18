@@ -92,6 +92,7 @@ test.each([
         return yield* run(definition, part.args).pipe(
           Effect.provideService(Workflow.Service, {
             getResource: () => Effect.die("Unexpected Resource read"),
+            question: () => Effect.die("Unexpected Question.ask"),
             parentPrompt: { agent: "analyst", model, parts },
             settings: { concurrency: 5 },
             agent: (input, onSession, options) =>
@@ -214,6 +215,7 @@ test.each(
       ).pipe(
         Effect.provideService(Workflow.Service, {
           getResource: () => Effect.die("Unexpected Resource read"),
+          question: () => Effect.die("Unexpected Question.ask"),
           parentPrompt: {
             agent: "analyst",
             model: { providerID: "codex", modelID: "tier4" },

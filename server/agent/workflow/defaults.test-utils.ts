@@ -27,6 +27,7 @@ export function defaultWorkflowFixture() {
           Effect.map(({ definition }) => definition),
           Effect.provideService(Workflow.Service, {
             getResource: () => Effect.die("Unexpected Resource read"),
+            question: () => Effect.die("Unexpected Question.ask"),
             parentPrompt: {
               agent: "analyst",
               model: { providerID: "codex", modelID: "tier4" },

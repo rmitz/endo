@@ -35,3 +35,17 @@ export class LoadFailed extends Schema.TaggedError<LoadFailed>()(
   "Workflow.LoadFailed",
   { workflow: Schema.String, message: Schema.String, cause: Schema.Defect() },
 ) {}
+
+/**
+ * An authored program requested a host capability outside a running invocation
+ * or the host could not complete it.
+ *
+ * @example
+ * ```ts
+ * const error = new ExecutionError({ message: "Workflow.question must run inside Workflow.run" });
+ * ```
+ */
+export class ExecutionError extends Schema.TaggedError<ExecutionError>()(
+  "Workflow.ExecutionError",
+  { message: Schema.String, cause: Schema.optional(Schema.Defect()) },
+) {}

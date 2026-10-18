@@ -1,6 +1,7 @@
 // Purpose: Owns workflow child Sessions and binds their serialized Effect execution.
 
 import type { Invocation } from "@openchart/server/agent/prompt/execute";
+import { Question } from "@openchart/server/agent/question";
 import { Session } from "@openchart/server/agent/session";
 import { Database } from "@openchart/server/db";
 import {
@@ -36,6 +37,7 @@ export const makeWorkflowHost = <E, R>(
   Effect.gen(function* () {
     const session = yield* Session.Service;
     const database = yield* Database.Service;
+    const questions = yield* Question.Service;
     const services = yield* Effect.context<R | SessionServices>();
     const children = new Map<string, Semaphore.Semaphore>();
     return Workflow.Service.of({
@@ -122,5 +124,20 @@ export const makeWorkflowHost = <E, R>(
             }),
           );
         }).pipe(Effect.provideContext(services)),
+      question: (input) =>
+        questions
+          .ask({
+            sessionID: invocationContext.sessionID,
+            questions: input.questions,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new Workflow.ExecutionError({
+                  message: cause.message,
+                  cause,
+                }),
+            ),
+          ),
     });
   });

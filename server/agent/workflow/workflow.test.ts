@@ -36,7 +36,10 @@ import {
   agent,
   defineWorkflow,
   parallel,
+  phase,
+  question,
 } from "@openchart/server/agent/workflow/authoring";
+import { Question } from "@openchart/server/agent/question";
 import { assertExists } from "@openchart/utils/assert";
 import { Deferred, Effect, Fiber, FileSystem, Schema, Stream } from "effect";
 import { expect, test, vi } from "vitest";
@@ -1429,6 +1432,118 @@ test("continuations reject unowned Sessions and serialize concurrent turns with 
     await f.runtime.dispose();
   }
 });
+
+test.each(["answer", "skip", "cancel"] as const)(
+  "a workflow question publishes its wait and cleans up after %s",
+  async (action) => {
+    const f = fixture(async () => answer("Unused"));
+    try {
+      await f.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { runs, root } = yield* f.setup;
+            const questions = yield* Question.Service;
+            const input: AgentPromptInput = {
+              ...prompt,
+              parts: [{ type: "text", text: "Ask before answering" }],
+            };
+            const rootRun = yield* runs.enqueue({
+              sessionID: root.id,
+              sessionIntentID: "question-host",
+              input,
+            });
+            const host = yield* makeWorkflowHost(
+              { rootRunID: rootRun.id, sessionID: root.id, input },
+              executeInvocation,
+              { concurrency: 5 },
+            );
+            const definition = defineWorkflow({
+              description: "Ask the user for confirmation",
+              args: Schema.Struct({}),
+              run: () =>
+                phase(
+                  "adjudicate",
+                  Effect.gen(function* () {
+                    const reply = yield* question({
+                      questions: [
+                        {
+                          id: "confirm",
+                          header: "Confirm",
+                          question: "Proceed?",
+                          options: [
+                            { label: "Yes", description: "Continue" },
+                            { label: "No", description: "Stop" },
+                          ],
+                          multiple: false,
+                          allowFreeform: false,
+                          secret: false,
+                        },
+                      ],
+                    });
+                    return reply.type === "answered"
+                      ? (reply.answers["confirm"]?.[0] ?? "missing")
+                      : "skipped";
+                  }),
+                ),
+            });
+            const traces: Schema.JsonObject[] = [];
+            const fiber = yield* run(definition, {}, undefined, (trace) =>
+              Effect.sync(() => {
+                traces.push(trace);
+              }),
+            ).pipe(
+              Effect.provideService(Workflow.Service, host),
+              Effect.forkChild,
+            );
+            const waitForPending = Effect.gen(function* () {
+              for (let attempt = 0; attempt < 200; attempt++) {
+                const pending = yield* questions.list(root.id);
+                const request = pending.find((item) =>
+                  item.questions.some((item) => item.id === "confirm"),
+                );
+                if (request) return request;
+                yield* Effect.sleep("10 millis");
+              }
+              return yield* Effect.die("The pending question never appeared");
+            });
+            const request = yield* waitForPending;
+            expect(
+              (yield* questions.list(root.id)).map((item) => item.id),
+            ).toContain(request.id);
+            const live = traceSpans(traces.at(-1), true);
+            expect(
+              live.find(({ name }) => name === "Workflow.question")
+                ?.endTimeUnixNano,
+            ).toBe("0");
+            expect(
+              live.find(({ name }) => name === "Workflow.phase")
+                ?.endTimeUnixNano,
+            ).toBe("0");
+            if (action === "cancel") yield* Fiber.interrupt(fiber);
+            else {
+              yield* questions.reply({
+                requestID: request.id,
+                reply:
+                  action === "answer"
+                    ? { type: "answered", answers: { confirm: ["Yes"] } }
+                    : { type: "skipped" },
+              });
+              expect(yield* Fiber.join(fiber)).toBe(
+                action === "answer" ? "Yes" : "skipped",
+              );
+            }
+            expect(yield* questions.list(root.id)).toEqual([]);
+            expect(traceSpans(traces.at(-1)).map(({ name }) => name)).toContain(
+              "Workflow.question",
+            );
+          }),
+        ).pipe(Effect.provideService(Models.Service, f.services)),
+      );
+    } finally {
+      await f.runtime.dispose();
+    }
+  },
+);
 
 test("cancelling a continued Session joins its active turn and never starts queued turns", async () => {
   const ready = Deferred.makeUnsafe<void>();

@@ -66,6 +66,15 @@ and the topic must be nonempty. Two agents alternate affirmative/negative statem
 the requested rounds, then a fresh summarizer receives the complete debate.
 All three use the model selected in the parent prompt.
 
+`plan-implement` uses `$1 $2` to emit
+`default:workflows/plan-implement.workflow.ts` with `{maxRounds, idea}`. The round
+bound must be a positive integer and the idea must be nonempty. Codex and Claude
+Code plan and cross-critique independently, debate blocking defects, and pause for
+discrete human decisions before compiling, implementing and verifying a spec.
+Unresolved defects return an escalation packet. See the
+[workflow contract](workflow.md#human-questions-and-escalation) for question,
+retry and model-selection behavior.
+
 `thesis-killer` and `hypothesis-race` use `$ARGUMENTS` and emit their file-based
 `default:workflows/thesis-killer.workflow.ts` / `default:workflows/hypothesis-race.workflow.ts` WorkflowParts with `{thesis}` / `{question}`.
 Both require nonblank text and preserve quotes and line breaks when editing.

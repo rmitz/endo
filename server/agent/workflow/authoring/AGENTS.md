@@ -11,6 +11,8 @@ backend services stay internal.
   the public index.
 - `phase(name, effect)` scopes progress through spans; Effect owns parentage,
   cleanup and cancellation. Publish start and terminal state through tracing.
+- `question(input)` pauses on host-delivered human answers without a child-agent
+  permit; `resource.get` reads host state. Both fail outside a running workflow.
 - Runtime and host own invocation limits, child Sessions, and cancellation.
   Primitives use those capabilities without creating a second runtime.
 

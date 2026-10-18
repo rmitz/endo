@@ -6,12 +6,18 @@ export type { AgentResult } from "@openchart/server/agent/workflow";
 export { defineWorkflow } from "./define-workflow";
 export { agent } from "./agent";
 export {
+  ExecutionError,
   InvalidOutput,
   InvalidOutputSchema,
 } from "@openchart/server/agent/workflow/errors";
 export { parallel, type Outcome } from "./parallel";
 export { phase } from "./phase";
+export { question, type QuestionInput, type QuestionReply } from "./question";
 export { textPrompt } from "./text-prompt";
+export type {
+  ProviderQuestion,
+  ProviderQuestionRequest,
+} from "@openchart/models/provider-question";
 
 export {
   CODEX,

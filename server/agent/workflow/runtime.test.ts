@@ -7,8 +7,10 @@ import {
   defineWorkflow,
   Effect,
   parallel,
+  question,
   Schema,
   type AgentPromptInput,
+  type QuestionInput,
 } from "@openchart/server/agent/workflow/authoring";
 import { Invocation, run } from "./runtime";
 import { Workflow } from "./workflow";
@@ -32,6 +34,7 @@ test("bounds every agent call, preserves ordering, and isolates expected child f
     run(definition, {}).pipe(
       Effect.provideService(Workflow.Service, {
         getResource: () => Effect.die("Unexpected Resource read"),
+        question: () => Effect.die("Unexpected Question.ask"),
         parentPrompt: prompt,
         settings: { concurrency: 2 },
         agent: () =>
@@ -88,6 +91,7 @@ test.each([1, 2, 5])(
       run(direct, {}).pipe(
         Effect.provideService(Workflow.Service, {
           getResource: () => Effect.die("Unexpected Resource read"),
+          question: () => Effect.die("Unexpected Question.ask"),
           parentPrompt: prompt,
           settings: { concurrency },
           agent: () =>
@@ -139,6 +143,7 @@ test.each(["parallel", "direct"] as const)(
             run(cancellable, {}).pipe(
               Effect.provideService(Workflow.Service, {
                 getResource: () => Effect.die("Unexpected Resource read"),
+                question: () => Effect.die("Unexpected Question.ask"),
                 parentPrompt: prompt,
                 settings: { concurrency: 2 },
                 agent: () =>
@@ -214,6 +219,7 @@ test("cancellation during argument preparation never enters the workflow", async
         ).pipe(
           Effect.provideService(Workflow.Service, {
             getResource: () => Effect.die("Unexpected Resource read"),
+            question: () => Effect.die("Unexpected Question.ask"),
             parentPrompt: prompt,
             settings: { concurrency: 2 },
             agent: () => Effect.die("Must not start"),
@@ -241,6 +247,7 @@ test("concurrent workflows sharing a host each own their concurrency allowance",
       ).pipe(
         Effect.provideService(Workflow.Service, {
           getResource: () => Effect.die("Unexpected Resource read"),
+          question: () => Effect.die("Unexpected Question.ask"),
           parentPrompt: prompt,
           settings: { concurrency: 2 },
           agent: () =>
@@ -281,6 +288,7 @@ test("defects propagate instead of becoming successful parallel outcomes", async
     run(definition, {}).pipe(
       Effect.provideService(Workflow.Service, {
         getResource: () => Effect.die("Unexpected Resource read"),
+        question: () => Effect.die("Unexpected Question.ask"),
         parentPrompt: prompt,
         settings: { concurrency: 5 },
         agent: () => Effect.die(new Error("Invariant violated")),
@@ -316,6 +324,7 @@ test("persists decoded arguments before execution and freezes detached inputs", 
     ).pipe(
       Effect.provideService(Workflow.Service, {
         getResource: () => Effect.die("Unexpected Resource read"),
+        question: () => Effect.die("Unexpected Question.ask"),
         parentPrompt: prompt,
         settings: { concurrency: 5 },
         agent: () => Effect.die("Unexpected agent"),
@@ -326,6 +335,92 @@ test("persists decoded arguments before execution and freezes detached inputs", 
   expect(result).toEqual({ question: "Research" });
   expect(source.question).toBe("  Research  ");
   expect(Object.isFrozen(source)).toBe(false);
+});
+
+test("question works inside run and fails with ExecutionError outside it", async () => {
+  const input: QuestionInput = {
+    questions: [
+      {
+        id: "confirm",
+        header: "Confirm",
+        question: "Proceed?",
+        options: [],
+        multiple: false,
+        allowFreeform: true,
+        secret: false,
+      },
+    ],
+  };
+  const outside = await Effect.runPromise(question(input).pipe(Effect.flip));
+  expect(outside).toMatchObject({ _tag: "Workflow.ExecutionError" });
+
+  const definition = defineWorkflow({
+    description: "Question",
+    args: Schema.Struct({}),
+    run: () => question(input),
+  });
+  const reply = await Effect.runPromise(
+    run(definition, {}).pipe(
+      Effect.provideService(Workflow.Service, {
+        getResource: () => Effect.die("Unexpected Resource read"),
+        question: () => Effect.succeed({ type: "skipped" }),
+        parentPrompt: prompt,
+        settings: { concurrency: 1 },
+        agent: () => Effect.die("Unexpected agent"),
+      }),
+    ),
+  );
+  expect(reply).toEqual({ type: "skipped" });
+});
+
+test("a human question can unblock a child while the only agent permit is occupied", async () => {
+  const answered = Deferred.makeUnsafe<void>();
+  const definition = defineWorkflow({
+    description: "Human input does not consume child capacity",
+    args: Schema.Struct({}),
+    run: () =>
+      Effect.all(
+        [
+          agent(prompt),
+          question({
+            questions: [
+              {
+                id: "confirm",
+                header: "Confirm",
+                question: "Continue?",
+                options: [],
+                multiple: false,
+                allowFreeform: true,
+                secret: false,
+              },
+            ],
+          }),
+        ],
+        { concurrency: "unbounded" },
+      ),
+  });
+  const result = await Effect.runPromise(
+    run(definition, {}).pipe(
+      Effect.provideService(Workflow.Service, {
+        parentPrompt: prompt,
+        settings: { concurrency: 1 },
+        getResource: () => Effect.die("Unexpected Resource read"),
+        agent: () =>
+          Deferred.await(answered).pipe(
+            Effect.as({ sessionId: "child", output: "unblocked" }),
+          ),
+        question: () =>
+          Deferred.succeed(answered, undefined).pipe(
+            Effect.as({ type: "skipped" as const }),
+          ),
+      }),
+      Effect.timeout("1 second"),
+    ),
+  );
+  expect(result).toEqual([
+    { sessionId: "child", output: "unblocked" },
+    { type: "skipped" },
+  ]);
 });
 
 test("rejects reserved context and invalid concurrency", async () => {
@@ -340,6 +435,7 @@ test("rejects reserved context and invalid concurrency", async () => {
       run(definition, {}).pipe(
         Effect.provideService(Workflow.Service, {
           getResource: () => Effect.die("Unexpected Resource read"),
+          question: () => Effect.die("Unexpected Question.ask"),
           parentPrompt: prompt,
           settings: { concurrency },
           agent: () => Effect.die("Must not start"),

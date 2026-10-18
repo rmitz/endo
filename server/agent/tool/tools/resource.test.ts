@@ -61,6 +61,7 @@ const makeRuntime = () =>
           ),
           Layer.succeed(Workflow.Service, {
             getResource: () => Effect.die("Unexpected Resource read"),
+            question: () => Effect.die("Unexpected Question.ask"),
             settings: { concurrency: 5 },
             parentPrompt: {
               agent: "analyst",
@@ -162,6 +163,7 @@ test("create_schedule reuses Schedule creation and inherits each invocation's ex
       invoke("create_schedule", scheduleInput).pipe(
         Effect.provideService(Workflow.Service, {
           getResource: () => Effect.die("Unexpected Resource read"),
+          question: () => Effect.die("Unexpected Question.ask"),
           parentPrompt,
           settings: { concurrency: 5 },
           agent: () => Effect.die("Creation must not execute the target"),

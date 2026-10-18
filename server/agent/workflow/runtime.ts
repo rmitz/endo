@@ -70,6 +70,8 @@ export const run = Effect.fn("Workflow.run")(function* (
     )
     .pipe(
       Effect.provideService(Workflow.Service, {
+        // Human questions keep the host capability directly; only agent calls
+        // consume a child permit, so a question can unblock a running child.
         ...host,
         agent: (input, onSession, options) =>
           semaphore.withPermit(

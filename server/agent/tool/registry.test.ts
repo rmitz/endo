@@ -42,6 +42,7 @@ test("exposes the built-in catalog and executes Echo", async () => {
       Effect.provide(Layer.mock(Workspaces, {})),
       Effect.provideService(Workflow.Service, {
         getResource: () => Effect.die("Unexpected Resource read"),
+        question: () => Effect.die("Unexpected Question.ask"),
         settings: { concurrency: 5 },
         parentPrompt: {
           agent: "analyst",

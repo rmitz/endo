@@ -47,6 +47,7 @@ export default defineWorkflow({description: "Edited", args: Schema.Struct({}), r
       loadWorkflow(`default:workflows/${file}`).pipe(
         Effect.provideService(Workflow.Service, {
           getResource: () => Effect.die("Unexpected Resource read"),
+          question: () => Effect.die("Unexpected Question.ask"),
           parentPrompt: {
             agent: "analyst",
             model: { providerID: "codex", modelID: "tier4" },

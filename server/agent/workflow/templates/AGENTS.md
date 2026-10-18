@@ -15,7 +15,7 @@ researchers followed by one summarizer, all as fresh Sessions under one root Run
 `multi-turn-debate.workflow.ts` runs a requested number of affirmative/negative rounds on any topic using two child Sessions,
 continued via `agent(input, {sessionId})`, then summarizes the complete public
 transcript in a fresh Session. All participants use `parentPrompt.model` unchanged;
-each call has its own span.
-`plan-implement.workflow.ts` races two frontier planners, cross-critiques and
-reconciles their plans, escalates forks, unresolved defects, and irreversible
-surfaces, and hands a distilled spec to a tier-3 implementer under verification.
+each call has its own span. `plan-implement.workflow.ts` runs two independent
+planners, cross-critiques, debates blocking defects, then either pauses with
+`question()` for design forks or returns an escalation packet before compiling,
+implementing, and verifying.
