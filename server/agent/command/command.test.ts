@@ -237,6 +237,14 @@ test("tRPC builds wire-safe Parts without admission; prompt owns composition val
           "Usage: <question>. Example: Why did signups drop after the redesign?",
         hints: ["$ARGUMENTS"],
       },
+      {
+        name: "plan-implement",
+        type: "workflow",
+        description: expect.any(String),
+        argumentHint:
+          "Usage: <maxRounds> <idea>. Max rounds must be a positive integer. Example: 2 Add offline support to the editor.",
+        hints: ["$1", "$2"],
+      },
     ]);
     const parts = await client.agent.buildCommand.mutate(request);
     expect(parts).toEqual(expected);

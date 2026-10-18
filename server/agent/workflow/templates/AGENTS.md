@@ -16,3 +16,6 @@ researchers followed by one summarizer, all as fresh Sessions under one root Run
 continued via `agent(input, {sessionId})`, then summarizes the complete public
 transcript in a fresh Session. All participants use `parentPrompt.model` unchanged;
 each call has its own span.
+`plan-implement.workflow.ts` races two frontier planners, cross-critiques and
+reconciles their plans, escalates forks, unresolved defects, and irreversible
+surfaces, and hands a distilled spec to a tier-3 implementer under verification.

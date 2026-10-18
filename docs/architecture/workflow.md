@@ -403,6 +403,26 @@ workflow. All stages use schema-constrained outputs with no implicit repair.
 `/thesis-killer <thesis>` and `/hypothesis-race <question>` compile their respective
 WorkflowParts without executing them.
 
+`workflows/plan-implement.workflow.ts` accepts `{idea, maxRounds}`, a positive
+integer revision bound. Two planners draft independent, repository-grounded
+plans: the parent prompt model and one other frontier provider. In a
+two-planner run the planners cross-critique each other through their own
+continued Sessions; a neutral arbiter then reconciles the plans and classifies
+each disagreement as a technical defect or a fork the idea does not settle.
+While blocking defects remain and rounds are left, the planners revise their
+continued Sessions and the arbiter re-reconciles. Forks, defects surviving the
+bound, or irreversible surfaces — a nonempty `publicContracts` list or planned
+paths matching schemas, migrations, contracts, or resources, screened
+deterministically — return an adjudication packet instead of implementing. A
+failing second planner degrades to solo planning under adversarial arbiter
+review and is reported in the result notes. Otherwise the arbiter compiles a
+self-contained execution spec, a tier-3 implementer builds and tests it, and a
+verifier running the parent model classifies each failure as an execution or
+plan error; one execution retry continues the implementer Session, and plan
+failures or exhausted attempts escalate.
+
+`/plan-implement <maxRounds> <idea>` uses `$1 $2` to build this WorkflowPart.
+
 The generic control-flow semantics follow V1. This slice does not port profile
 lifecycle plugins, TaskTool,
 scheduled dispatch, or startup repair. No mid-program replay or durable DAG engine

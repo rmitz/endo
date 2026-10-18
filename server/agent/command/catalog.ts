@@ -5,6 +5,7 @@ import { bestOfNCommand } from "./commands/best-of-n";
 import { multiTurnDebateCommand } from "./commands/multi-turn-debate";
 import { thesisKillerCommand } from "./commands/thesis-killer";
 import { hypothesisRaceCommand } from "./commands/hypothesis-race";
+import { planImplementCommand } from "./commands/plan-implement";
 import type { Definition } from "./definition";
 
 /**
@@ -17,6 +18,7 @@ export const definitions = [
   multiTurnDebateCommand,
   thesisKillerCommand,
   hypothesisRaceCommand,
+  planImplementCommand,
 ] as const satisfies readonly Definition[];
 /** The sole server-owned lookup; duplicate names are an initialization defect. */
 export const catalog = new Map(
