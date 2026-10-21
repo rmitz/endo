@@ -1,6 +1,8 @@
 // Purpose: Owns workflow child Sessions and binds their serialized Effect execution.
 
 import type { Invocation } from "@openchart/server/agent/prompt/execute";
+import { Question as QuestionInfo } from "../question/types";
+import { Models } from "@openchart/server/models";
 import { Question } from "@openchart/server/agent/question";
 import { Session } from "@openchart/server/agent/session";
 import { Database } from "@openchart/server/db";
@@ -38,6 +40,7 @@ export const makeWorkflowHost = <E, R>(
     const session = yield* Session.Service;
     const database = yield* Database.Service;
     const questions = yield* Question.Service;
+    const models = yield* Models.Service;
     const services = yield* Effect.context<R | SessionServices>();
     const children = new Map<string, Semaphore.Semaphore>();
     return Workflow.Service.of({
@@ -125,19 +128,71 @@ export const makeWorkflowHost = <E, R>(
           );
         }).pipe(Effect.provideContext(services)),
       question: (input) =>
-        questions
-          .ask({
+        Effect.gen(function* () {
+          if (
+            input.questions.some((item) => item.modelSelection) &&
+            input.questions.some((item) => !item.modelSelection)
+          )
+            return yield* new Workflow.ExecutionError({
+              message: "Model selections must use a separate question batch",
+            });
+          // Discovery happens before Question.ask acquires its mutation lock.
+          const catalog = input.questions.some((item) => item.modelSelection)
+            ? yield* models.list()
+            : [];
+          const views = yield* Effect.forEach(input.questions, (item) =>
+            Effect.gen(function* () {
+              if (!item.modelSelection) return item;
+              const preferred = item.modelSelection;
+              const resolved = yield* models
+                .getModel(preferred.providerID, preferred.modelID)
+                .pipe(Effect.result);
+              const native =
+                resolved._tag === "Success" ? resolved.success : undefined;
+              return {
+                ...item,
+                modelSelection: {
+                  defaultModel: native
+                    ? {
+                        providerID: preferred.providerID,
+                        modelID: native.id,
+                        ...(preferred.selectedVariant &&
+                        native.availableVariants?.includes(
+                          preferred.selectedVariant,
+                        )
+                          ? { selectedVariant: preferred.selectedVariant }
+                          : {}),
+                      }
+                    : preferred,
+                  providers: catalog.map((provider) => ({
+                    id: provider.id,
+                    name: provider.name,
+                    models: provider.models.map((model) => ({
+                      id: model.id,
+                      name: model.name,
+                      ...(model.availableVariants
+                        ? { availableVariants: [...model.availableVariants] }
+                        : {}),
+                    })),
+                  })),
+                },
+              };
+            }),
+          );
+          return yield* questions.ask({
             sessionID: invocationContext.sessionID,
-            questions: input.questions,
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new Workflow.ExecutionError({
-                  message: cause.message,
-                  cause,
-                }),
-            ),
+            questions: yield* Schema.decodeUnknownEffect(
+              Schema.Array(QuestionInfo),
+            )(views),
+          });
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new Workflow.ExecutionError({
+                message: "Could not deliver workflow questions",
+                cause,
+              }),
           ),
+        ),
     });
   });

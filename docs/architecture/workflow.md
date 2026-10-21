@@ -427,14 +427,36 @@ workflow. All stages use schema-constrained outputs with no implicit repair.
 WorkflowParts without executing them.
 
 `workflows/plan-implement.workflow.ts` accepts `{idea, maxRounds}`, with a
-nonempty idea and positive integer debate bound. Independent Codex and Claude Code
-planners use tier 4. Each cross-critiques the other plan on its own continued
+nonempty idea and positive integer debate bound. The first phase asks the user to
+select models for planner A, planner B, coordinator, implementer and verifier.
+Each role reuses the chat model picker, including harness attribution, native
+model names and reasoning-effort controls.
+The host snapshots enabled provider discovery before publishing the question,
+resolves default tiers to exact native IDs when available, and includes only
+display names, native IDs and advertised efforts. No model names are typed.
+Choosing a different model or harness resets effort to Default. Models without
+advertised efforts show no effort choices, matching the chat picker.
+Missing defaults require an explicit selection. Replies encode each selected
+prompt-model object as JSON in the ordinary question answer string. Question
+ownership validates exact provider/model/effort membership against its frozen
+catalog before settling the wait. Invalid or incomplete replies leave the question
+pending; no child starts until every role has a valid selection. Model-selection
+questions use a separate batch from ordinary text/choice questions.
+Skipping returns `{status: "cancelled", reason: "model_selection_skipped"}`.
+
+Defaults are Codex tier 4 for planner A, Claude Code tier 4 for planner B,
+Codex tier 3 for implementation, Codex tier 4 for coordination and Claude Code
+tier 4 for verification. Each role is independently selectable. Defaults resolve
+tiers using normal provider-local fallback; submitted menu selections use exact
+native IDs. Availability is checked again by ordinary child execution. Selections
+remain fixed through revisions and retries and are included in the final result.
+The planners work independently. Each cross-critiques the other plan on its own continued
 Session. Debate runs only for blocking technical defects: each planner receives
 only the opposing critique's blocking defects against its own plan, then both
 re-critique the revised plans. Normative forks and nonblocking issues are not
 misrepresented as technical blockers.
 
-A Codex distiller creates an agreed spine. Unresolved blocking defects return an
+The coordinator creates an agreed spine. Unresolved blocking defects return an
 `adjudication_required` escalation immediately, preserving both planner Sessions
 and the spine. With no blockers, design forks and high-impact surfaces instead
 pause in `question()`: one choice per fork and, when needed, one explicit approval
@@ -447,16 +469,18 @@ before spec compilation or implementation.
 Answered decisions preserve each original fork ID; generated question IDs only
 route answers. `irreversibleConfirmed` is true only when irreversible surfaces
 were present and approved. The distiller continues its Session to compile the
-execution spec with those decisions. A tier-3 Codex implementer builds it, and a
-tier-4 Claude Code verifier independently checks the result. An `execution_failure`
+execution spec with those decisions. The selected implementer builds it, and the
+selected verifier independently checks the result. An `execution_failure`
 gets one retry, continuing both implementer and verifier Sessions; `plan_failure`
 or an exhausted retry returns `verification_failed` with the reports and Sessions.
-Both configured planner providers must be available; provider failures propagate.
-The model constants are editable in the workspace template.
+Selected providers must be available when called; provider failures propagate.
+Role models are selected per invocation without editing the workspace template.
 
 ```mermaid
 flowchart TD
-    Plan[Independent plans] --> Critique[Cross-critique]
+    Models[Choose role models] -->|All valid| Plan[Independent plans]
+    Models -->|Skipped| Cancel[Return cancelled]
+    Plan --> Critique[Cross-critique]
     Critique --> Defects{Blocking defects and rounds left?}
     Defects -->|Yes| Revise[Targeted revisions and re-critique]
     Revise --> Defects

@@ -20,7 +20,13 @@ import type {
   AgentClient,
 } from "@openchart/app/lib/agent/client";
 
-type Providers = Awaited<ReturnType<AgentClient["models"]>>;
+type Provider = Awaited<ReturnType<AgentClient["models"]>>[number];
+type Providers = readonly (Pick<Provider, "id" | "name"> & {
+  models: readonly Pick<
+    Provider["models"][number],
+    "id" | "name" | "tier" | "availableVariants"
+  >[];
+})[];
 
 function isInstallingProvider(
   providerSetup: ReturnType<typeof useAgentContext>["agent"]["providerSetup"],

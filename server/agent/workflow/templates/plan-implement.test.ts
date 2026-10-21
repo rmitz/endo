@@ -1,7 +1,7 @@
 // Purpose: Exercises plan-implement debate, adjudication, escalation, implementation and retry paths.
 
 import type { AgentPromptInput } from "@openchart/server/agent/contracts/agent-prompt-input";
-import { Effect } from "effect";
+import { Effect, type Schema } from "effect";
 import { expect, test } from "vitest";
 import type {
   QuestionInput,
@@ -112,9 +112,11 @@ function makeService(config: {
   readonly respond: (call: AgentCall) => unknown;
   readonly sessionFor?: (call: AgentCall) => string | undefined;
   readonly question?: (input: QuestionInput) => QuestionReply;
+  readonly selectModels?: (input: QuestionInput) => QuestionReply;
 }) {
   const calls: AgentCall[] = [];
   const questionCalls: QuestionInput[] = [];
+  const modelQuestionCalls: QuestionInput[] = [];
   let counter = 0;
   const service = {
     getResource: () => Effect.die("Unexpected Resource read"),
@@ -122,6 +124,29 @@ function makeService(config: {
     settings: { concurrency: 5 },
     question: (input: QuestionInput) =>
       Effect.sync(() => {
+        if (
+          input.questions.every((question) =>
+            [
+              "plannerA",
+              "plannerB",
+              "coordinator",
+              "implementer",
+              "verifier",
+            ].includes(question.id),
+          )
+        ) {
+          modelQuestionCalls.push(input);
+          if (config.selectModels) return config.selectModels(input);
+          return {
+            type: "answered" as const,
+            answers: Object.fromEntries(
+              input.questions.map((question) => [
+                question.id,
+                [JSON.stringify(question.modelSelection)],
+              ]),
+            ),
+          };
+        }
         questionCalls.push(input);
         if (!config.question) throw new Error("Unexpected question");
         return config.question(input);
@@ -134,7 +159,15 @@ function makeService(config: {
       Effect.gen(function* () {
         const required = requiredFields(options?.outputSchema);
         const kind = classify(required);
-        const side = input.model.providerID === "codex" ? "A" : "B";
+        const side =
+          options?.sessionId === "plan-a" ||
+          input.parts.some(
+            (part) =>
+              part.type === "text" &&
+              part.text.startsWith("You are Planner A."),
+          )
+            ? "A"
+            : "B";
         const call: AgentCall = {
           input,
           kind,
@@ -151,7 +184,7 @@ function makeService(config: {
         return { sessionId, output: JSON.stringify(config.respond(call)) };
       }),
   } satisfies Workflow.Service["Service"];
-  return { service, calls, questionCalls };
+  return { service, calls, questionCalls, modelQuestionCalls };
 }
 
 const plannerSessions = (call: AgentCall) =>
@@ -163,7 +196,7 @@ const plannerSessions = (call: AgentCall) =>
 
 async function runWith(
   service: Workflow.Service["Service"],
-  args: { idea: string; maxRounds: number },
+  args: Schema.JsonObject,
 ) {
   const definition = await Effect.runPromise(
     loadDefaultWorkflow("default:workflows/plan-implement.workflow.ts"),
@@ -207,7 +240,7 @@ interface Implemented {
   readonly sessions: Readonly<Record<string, string | null>>;
 }
 
-test("fast path skips debate, adjudication, and questions", async () => {
+test("default role selections retain the fast path without debate or adjudication", async () => {
   const { service, calls, questionCalls } = makeService({
     respond: (call) => {
       switch (call.kind) {
@@ -652,4 +685,311 @@ test("a public contract in either plan requires confirmation even if the distill
   expect(questionCalls[0]?.questions[0]?.question).toContain(
     "public contract: Workflow.question",
   );
+});
+
+test("custom role models survive debate, coordination and implementation retries", async () => {
+  const models = {
+    plannerA: { providerID: "opencode", modelID: "private/planner" },
+    plannerB: { providerID: "grok", modelID: "tier2" },
+    coordinator: { providerID: "antigravity", modelID: "custom-model" },
+    implementer: { providerID: "claude-code", modelID: "tier1" },
+    verifier: { providerID: "codex", modelID: "exact-verifier" },
+  };
+  let critiques = 0;
+  let verifies = 0;
+  const { service, calls } = makeService({
+    respond: (call) => {
+      switch (call.kind) {
+        case "plan":
+          return plan(call.side);
+        case "critique":
+          return critiques++ < 2
+            ? { agreements: [], issues: [defect()] }
+            : emptyCritique;
+        case "spine":
+          return spine();
+        case "spec":
+          return spec;
+        case "report":
+          return report(1);
+        case "verdict":
+          return verdict(verifies++ === 0 ? "execution_failure" : "pass");
+      }
+    },
+    sessionFor: plannerSessions,
+    selectModels: () => ({
+      type: "answered",
+      answers: Object.fromEntries(
+        Object.entries(models).map(([role, model]) => [
+          role,
+          [JSON.stringify(model)],
+        ]),
+      ),
+    }),
+  });
+  const result = (await runWith(service, {
+    idea: "Add a utility",
+    maxRounds: 2,
+  })) as Implemented;
+  expect(result).toMatchObject({
+    status: "implemented",
+    roundsCompleted: 1,
+    implementationAttempts: 2,
+  });
+  for (const call of calls) {
+    const expected =
+      call.kind === "plan" || call.kind === "critique"
+        ? models[call.side === "A" ? "plannerA" : "plannerB"]
+        : call.kind === "report"
+          ? models.implementer
+          : call.kind === "verdict"
+            ? models.verifier
+            : models.coordinator;
+    expect(call.input.model).toEqual(expected);
+  }
+  const specs = calls.filter((call) => call.kind === "spec");
+  expect(specs[0]?.sessionId).toBe(
+    `child-${calls.find((call) => call.kind === "spine")!.index}`,
+  );
+  for (const kind of ["report", "verdict"] as const) {
+    const attempts = calls.filter((call) => call.kind === kind);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]?.sessionId).toBe(`child-${attempts[0]!.index}`);
+  }
+});
+
+test("coordinator and verifier remain independently selectable when planners change", async () => {
+  const models = {
+    plannerA: { providerID: "opencode", modelID: "private/planner" },
+    plannerB: { providerID: "opencode", modelID: "private/reviewer" },
+  };
+  const { service, calls } = makeService({
+    respond: (call) => {
+      switch (call.kind) {
+        case "plan":
+          return plan(call.side);
+        case "critique":
+          return emptyCritique;
+        case "spine":
+          return spine();
+        case "spec":
+          return spec;
+        case "report":
+          return report(1);
+        case "verdict":
+          return verdict("pass");
+      }
+    },
+    sessionFor: plannerSessions,
+    selectModels: (input) => ({
+      type: "answered",
+      answers: Object.fromEntries(
+        input.questions.map((question) => [
+          question.id,
+          [
+            question.id === "plannerA"
+              ? JSON.stringify(models.plannerA)
+              : question.id === "plannerB"
+                ? JSON.stringify(models.plannerB)
+                : JSON.stringify(question.modelSelection),
+          ],
+        ]),
+      ),
+    }),
+  });
+  expect(
+    await runWith(service, { idea: "Add a utility", maxRounds: 1 }),
+  ).toMatchObject({ status: "implemented" });
+  expect(calls.find((call) => call.kind === "spine")?.input.model).toEqual({
+    providerID: "codex",
+    modelID: "tier4",
+  });
+  expect(calls.find((call) => call.kind === "spec")?.input.model).toEqual({
+    providerID: "codex",
+    modelID: "tier4",
+  });
+  expect(calls.find((call) => call.kind === "verdict")?.input.model).toEqual({
+    providerID: "claude-code",
+    modelID: "tier4",
+  });
+  expect(calls.find((call) => call.kind === "report")?.input.model).toEqual({
+    providerID: "codex",
+    modelID: "tier3",
+  });
+});
+
+test("skipping role selection cancels before any agent starts", async () => {
+  const { service, calls, modelQuestionCalls } = makeService({
+    respond: () => {
+      throw new Error("Must not execute");
+    },
+    selectModels: () => ({ type: "skipped" }),
+  });
+  expect(
+    await runWith(service, { idea: "Add a utility", maxRounds: 1 }),
+  ).toEqual({ status: "cancelled", reason: "model_selection_skipped" });
+  expect(calls).toHaveLength(0);
+  expect(modelQuestionCalls).toHaveLength(1);
+});
+
+test.each(["unknown:tier4", "codex:tier99", "codex:", "tier4", "", "codex: "])(
+  "invalid selection %j asks again only for that role before starting children",
+  async (invalid) => {
+    let attempts = 0;
+    const { service, calls, modelQuestionCalls } = makeService({
+      respond: () => {
+        throw new Error("Must not execute");
+      },
+      selectModels: (input) =>
+        attempts++ === 0
+          ? {
+              type: "answered",
+              answers: Object.fromEntries(
+                input.questions.map((question) => [
+                  question.id,
+                  [
+                    question.id === "plannerA"
+                      ? invalid
+                      : JSON.stringify(question.modelSelection),
+                  ],
+                ]),
+              ),
+            }
+          : { type: "skipped" },
+    });
+    expect(
+      await runWith(service, { idea: "Add a utility", maxRounds: 1 }),
+    ).toMatchObject({ status: "cancelled" });
+    expect(modelQuestionCalls).toHaveLength(2);
+    expect(
+      modelQuestionCalls[1]?.questions.map((question) => question.id),
+    ).toEqual(["plannerA"]);
+    expect(calls).toHaveLength(0);
+  },
+);
+
+test("missing and multiple answers do not silently select defaults", async () => {
+  let attempts = 0;
+  const { service, calls, modelQuestionCalls } = makeService({
+    respond: () => {
+      throw new Error("Must not execute");
+    },
+    selectModels: () =>
+      attempts++ === 0
+        ? {
+            type: "answered",
+            answers: { plannerA: ["codex:tier4", "codex:tier3"] },
+          }
+        : { type: "skipped" },
+  });
+  expect(
+    await runWith(service, { idea: "Add a utility", maxRounds: 1 }),
+  ).toMatchObject({ status: "cancelled" });
+  expect(modelQuestionCalls[1]?.questions).toHaveLength(5);
+  expect(calls).toHaveLength(0);
+});
+
+test("correcting an invalid answer retains the other role selections", async () => {
+  let attempts = 0;
+  const { service, calls, modelQuestionCalls } = makeService({
+    respond: (call) => {
+      switch (call.kind) {
+        case "plan":
+          return plan(call.side);
+        case "critique":
+          return emptyCritique;
+        case "spine":
+          return spine();
+        case "spec":
+          return spec;
+        case "report":
+          return report(1);
+        case "verdict":
+          return verdict("pass");
+      }
+    },
+    sessionFor: plannerSessions,
+    selectModels: (input) => {
+      expect(calls).toHaveLength(0);
+      return {
+        type: "answered",
+        answers: Object.fromEntries(
+          input.questions.map((question) => [
+            question.id,
+            [
+              question.id === "plannerA"
+                ? attempts++ === 0
+                  ? "codex:tier99"
+                  : JSON.stringify({
+                      providerID: "opencode",
+                      modelID: "private/corrected",
+                    })
+                : question.id === "implementer"
+                  ? JSON.stringify({ providerID: "grok", modelID: "tier2" })
+                  : JSON.stringify(question.modelSelection),
+            ],
+          ]),
+        ),
+      };
+    },
+  });
+  const result = await runWith(service, {
+    idea: "Add a utility",
+    maxRounds: 1,
+  });
+  expect(result).toMatchObject({
+    status: "implemented",
+    models: {
+      plannerA: { providerID: "opencode", modelID: "private/corrected" },
+      coordinator: { providerID: "codex", modelID: "tier4" },
+      implementer: { providerID: "grok", modelID: "tier2" },
+    },
+  });
+  expect(modelQuestionCalls).toHaveLength(2);
+  expect(
+    modelQuestionCalls[1]?.questions.map((question) => question.id),
+  ).toEqual(["plannerA"]);
+});
+
+test("native identities and reasoning efforts are preserved for every role", async () => {
+  const model = {
+    providerID: "opencode" as const,
+    modelID: "private/vendor/model",
+    selectedVariant: "high",
+  };
+  const { service, calls } = makeService({
+    respond: (call) => {
+      switch (call.kind) {
+        case "plan":
+          return plan(call.side);
+        case "critique":
+          return emptyCritique;
+        case "spine":
+          return spine();
+        case "spec":
+          return spec;
+        case "report":
+          return report(1);
+        case "verdict":
+          return verdict("pass");
+      }
+    },
+    sessionFor: plannerSessions,
+    selectModels: (input) => ({
+      type: "answered",
+      answers: Object.fromEntries(
+        input.questions.map((question) => [
+          question.id,
+          [JSON.stringify(model)],
+        ]),
+      ),
+    }),
+  });
+  expect(
+    await runWith(
+      { ...service, parentPrompt: { ...basePrompt, model } },
+      { idea: "Add a utility", maxRounds: 1 },
+    ),
+  ).toMatchObject({ status: "implemented" });
+  for (const call of calls) expect(call.input.model).toEqual(model);
 });

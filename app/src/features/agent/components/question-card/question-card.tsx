@@ -1,5 +1,6 @@
 // Purpose: Collects native provider answers using the shared Questionnaire.
 import { useRef, useState } from "react";
+import { ModelQuestionForm } from "./model-question-form";
 import { Button } from "@openchart/app/components/ui/button";
 import {
   Questionnaire,
@@ -52,6 +53,22 @@ export function QuestionCard({
       sending.current = false;
       setPending(false);
     }
+  }
+  if (
+    request.questions.length &&
+    request.questions.every((question) => question.modelSelection)
+  ) {
+    return (
+      <ModelQuestionForm
+        key={request.id}
+        request={request}
+        disabled={disabled}
+        pending={pending}
+        error={error}
+        onSkip={() => void reply({ type: "skipped" })}
+        onSubmit={(answers) => void reply({ type: "answered", answers })}
+      />
+    );
   }
   return (
     <div className="mb-3 w-full max-w-sm rounded-2xl border border-border/60 bg-background p-3.5 dark:bg-popover">

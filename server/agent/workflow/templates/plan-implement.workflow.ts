@@ -2,6 +2,7 @@
 
 import {
   agent,
+  AgentPromptModel,
   CLAUDE_CODE,
   CODEX,
   defineWorkflow,
@@ -107,9 +108,81 @@ type AdjudicationResolution = {
 
 /** One implementation attempt plus at most one retry after an execution failure. */
 const MAX_IMPLEMENTATION_ATTEMPTS = 2;
-const PLANNER_A_MODEL = { providerID: CODEX, modelID: TIER4 } as const;
-const PLANNER_B_MODEL = { providerID: CLAUDE_CODE, modelID: TIER4 } as const;
-const IMPLEMENTER_MODEL = { providerID: CODEX, modelID: TIER3 } as const;
+
+const RoleModels = Schema.Struct({
+  plannerA: AgentPromptModel,
+  plannerB: AgentPromptModel,
+  coordinator: AgentPromptModel,
+  implementer: AgentPromptModel,
+  verifier: AgentPromptModel,
+});
+type Role = keyof typeof RoleModels.Type;
+
+const roleQuestions = [
+  {
+    id: "plannerA",
+    header: "Planner A",
+    model: { providerID: CODEX, modelID: TIER4 },
+    task: "Draft, critique and revise the first plan.",
+  },
+  {
+    id: "plannerB",
+    header: "Planner B",
+    model: { providerID: CLAUDE_CODE, modelID: TIER4 },
+    task: "Independently draft, critique and revise the second plan.",
+  },
+  {
+    id: "coordinator",
+    header: "Coordinator",
+    model: { providerID: CODEX, modelID: TIER4 },
+    task: "Reconcile the plans and compile the execution specification.",
+  },
+  {
+    id: "implementer",
+    header: "Implementer",
+    model: { providerID: CODEX, modelID: TIER3 },
+    task: "Implement the specification, including any retry.",
+  },
+  {
+    id: "verifier",
+    header: "Verifier",
+    model: { providerID: CLAUDE_CODE, modelID: TIER4 },
+    task: "Independently verify the implementation, including any retry.",
+  },
+] as const;
+
+/** Collects explicit model and effort choices before any child starts; skip cancels. */
+const chooseRoleModels = Effect.fn("PlanImplement.chooseRoleModels")(
+  function* () {
+    const selected: Partial<Record<Role, AgentPromptModel>> = {};
+    let pending: QuestionInput["questions"] = roleQuestions.map((role) => ({
+      id: role.id,
+      header: role.header,
+      question: role.task,
+      modelSelection: role.model,
+      options: [],
+      multiple: false,
+      allowFreeform: false,
+      secret: false,
+    }));
+    while (pending.length > 0) {
+      const reply = yield* question({ questions: pending });
+      if (reply.type === "skipped") return undefined;
+      const retry: QuestionInput["questions"][number][] = [];
+      for (const request of pending) {
+        const role = roleQuestions.find((role) => role.id === request.id)!;
+        const answers = reply.answers[request.id];
+        const result = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(AgentPromptModel),
+        )(answers?.length === 1 ? answers[0] : undefined).pipe(Effect.result);
+        if (result._tag === "Success") selected[role.id] = result.success;
+        else retry.push(request);
+      }
+      pending = retry;
+    }
+    return yield* Schema.decodeUnknownEffect(RoleModels)(selected);
+  },
+);
 
 function issueKey(issue: CritiqueIssue): string {
   return `${issue.id.trim().toLowerCase()}\u0000${issue.summary.trim().toLowerCase()}`;
@@ -325,21 +398,30 @@ function verifyPrompt(
 /** Plans, debates, adjudicates, implements, and verifies one concept. */
 export default defineWorkflow({
   description:
-    "Accepts {idea: non-empty string, maxRounds: positive integer}. Two independent planners (Codex and Claude Code) cross-critique, run a bounded technical-defect debate, distill an agreed spine, adjudicate design forks or irreversible surfaces with the user in-process, then compile a spec, implement it with Codex, and verify it with Claude Code.",
+    "Accepts {idea: non-empty string, maxRounds: positive integer}. Before starting any child, asks the user to choose models or tiers for plannerA, plannerB, coordinator, implementer and verifier. Skip cancels without running agents. Defaults are Codex tier4 and Claude Code tier4 planners, a Codex tier4 coordinator, a Codex tier3 implementer, and a Claude Code tier4 verifier. Two independent planners cross-critique, run a bounded technical-defect debate, distill an agreed spine, adjudicate design forks or irreversible surfaces with the user in-process, then compile a spec, implement it, and independently verify it using the selected roles.",
   args: planImplementArgs,
   run: ({ idea, maxRounds }, { parentPrompt }) =>
     Effect.gen(function* () {
       const profile = parentPrompt.agent;
+      const models = yield* phase("Choose role models", chooseRoleModels());
+      if (!models) {
+        const cancelled: Schema.JsonObject = {
+          status: "cancelled",
+          reason: "model_selection_skipped",
+        };
+        return cancelled;
+      }
+      const { plannerA, plannerB, coordinator, implementer, verifier } = models;
 
       const planPhase = yield* phase(
         "plan",
         Effect.all(
           [
-            agent(textPrompt(planPrompt("A", idea), PLANNER_A_MODEL, profile), {
+            agent(textPrompt(planPrompt("A", idea), plannerA, profile), {
               schema: Plan,
               label: "Planner A",
             }),
-            agent(textPrompt(planPrompt("B", idea), PLANNER_B_MODEL, profile), {
+            agent(textPrompt(planPrompt("B", idea), plannerB, profile), {
               schema: Plan,
               label: "Planner B",
             }),
@@ -355,12 +437,12 @@ export default defineWorkflow({
         "critique",
         Effect.all(
           [
-            agent(textPrompt(critiquePrompt(planB), PLANNER_A_MODEL, profile), {
+            agent(textPrompt(critiquePrompt(planB), plannerA, profile), {
               schema: Critique,
               sessionId: planAResult.sessionId,
               label: "Critique B",
             }),
-            agent(textPrompt(critiquePrompt(planA), PLANNER_B_MODEL, profile), {
+            agent(textPrompt(critiquePrompt(planA), plannerB, profile), {
               schema: Critique,
               sessionId: planBResult.sessionId,
               label: "Critique A",
@@ -389,7 +471,7 @@ export default defineWorkflow({
                 agent(
                   textPrompt(
                     revisePrompt("A", planA, defectsA),
-                    PLANNER_A_MODEL,
+                    plannerA,
                     profile,
                   ),
                   {
@@ -401,7 +483,7 @@ export default defineWorkflow({
                 agent(
                   textPrompt(
                     revisePrompt("B", planB, defectsB),
-                    PLANNER_B_MODEL,
+                    plannerB,
                     profile,
                   ),
                   {
@@ -417,22 +499,16 @@ export default defineWorkflow({
             planB = revised[1].output;
             const recritiques = yield* Effect.all(
               [
-                agent(
-                  textPrompt(critiquePrompt(planB), PLANNER_A_MODEL, profile),
-                  {
-                    schema: Critique,
-                    sessionId: planAResult.sessionId,
-                    label: `Re-critique B round ${round}`,
-                  },
-                ),
-                agent(
-                  textPrompt(critiquePrompt(planA), PLANNER_B_MODEL, profile),
-                  {
-                    schema: Critique,
-                    sessionId: planBResult.sessionId,
-                    label: `Re-critique A round ${round}`,
-                  },
-                ),
+                agent(textPrompt(critiquePrompt(planB), plannerA, profile), {
+                  schema: Critique,
+                  sessionId: planAResult.sessionId,
+                  label: `Re-critique B round ${round}`,
+                }),
+                agent(textPrompt(critiquePrompt(planA), plannerB, profile), {
+                  schema: Critique,
+                  sessionId: planBResult.sessionId,
+                  label: `Re-critique A round ${round}`,
+                }),
               ],
               { concurrency: "unbounded" },
             );
@@ -447,7 +523,7 @@ export default defineWorkflow({
         agent(
           textPrompt(
             distillPrompt(idea, planA, planB, critiques),
-            PLANNER_A_MODEL,
+            coordinator,
             profile,
           ),
           { schema: DistilledSpine, label: "Distill spine" },
@@ -468,6 +544,7 @@ export default defineWorkflow({
         reason: "adjudication_required" | "verification_failed",
       ) => ({
         status: "escalated" as const,
+        models,
         reason,
         roundsCompleted,
         triggers: {
@@ -520,7 +597,7 @@ export default defineWorkflow({
         agent(
           textPrompt(
             specPrompt(idea, spine, planA, planB, adjudicationResolution),
-            PLANNER_A_MODEL,
+            coordinator,
             profile,
           ),
           {
@@ -542,7 +619,7 @@ export default defineWorkflow({
           agent(
             textPrompt(
               implementPrompt(spec, attempt, verificationFeedback),
-              IMPLEMENTER_MODEL,
+              implementer,
               profile,
             ),
             {
@@ -559,11 +636,7 @@ export default defineWorkflow({
         const verificationResult = yield* phase(
           `verify${suffix}`,
           agent(
-            textPrompt(
-              verifyPrompt(spec, implementation),
-              PLANNER_B_MODEL,
-              profile,
-            ),
+            textPrompt(verifyPrompt(spec, implementation), verifier, profile),
             {
               schema: VerificationVerdict,
               sessionId: verifierSessionId,
@@ -577,6 +650,7 @@ export default defineWorkflow({
         if (verdict.status === "pass")
           return {
             status: "implemented" as const,
+            models,
             roundsCompleted,
             implementationAttempts: attempt,
             adjudicationResolution,

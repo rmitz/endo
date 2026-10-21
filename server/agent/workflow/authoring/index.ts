@@ -1,7 +1,10 @@
 // Purpose: Exposes the restricted, Effect-native authoring API for server workflows.
 
 export { Effect, Schema } from "effect";
-export { AgentPromptInput } from "@openchart/server/agent/contracts/agent-prompt-input";
+export {
+  AgentPromptInput,
+  AgentPromptModel,
+} from "@openchart/server/agent/contracts/agent-prompt-input";
 export type { AgentResult } from "@openchart/server/agent/workflow";
 export { defineWorkflow } from "./define-workflow";
 export { agent } from "./agent";

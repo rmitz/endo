@@ -15,9 +15,9 @@ export const planImplementCommand = defineCommand({
   name: "plan-implement",
   type: "workflow",
   description:
-    "Race two frontier planners against an idea, reconcile, then implement with a lower-tier model under verification",
+    "Develop two plans, reconcile, implement and verify. Choose any available model independently for each role",
   argumentHint:
-    "Usage: <maxRounds> <idea>. Max rounds must be a positive integer. Example: 2 Add offline support to the editor.",
+    "Usage: <maxRounds> <idea>. Choose role models interactively after submission. Max rounds must be a positive integer. Example: 2 Add offline support to the editor.",
   template: "$1 $2",
   buildParts: ({ captures }) =>
     Schema.decodeUnknownEffect(planImplementArgs)({

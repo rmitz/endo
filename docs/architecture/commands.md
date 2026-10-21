@@ -68,8 +68,14 @@ All three use the model selected in the parent prompt.
 
 `plan-implement` uses `$1 $2` to emit
 `default:workflows/plan-implement.workflow.ts` with `{maxRounds, idea}`. The round
-bound must be a positive integer and the idea must be nonempty. Codex and Claude
-Code plan and cross-critique independently, debate blocking defects, and pause for
+bound must be a positive integer and the idea must be nonempty. After submission,
+the workflow asks for planner A, planner B, coordinator, implementer and verifier
+models before starting any child. Each role reuses the chat model picker, populated from a host-supplied
+discovery snapshot. The picker identifies each model’s harness and exposes its
+reasoning-effort choices. Models
+use exact native IDs and efforts use only the model's advertised variants.
+Changing the harness or model clears incompatible choices; skipping cancels
+without running agents. Planners cross-critique independently, debate blocking defects, and pause for
 discrete human decisions before compiling, implementing and verifying a spec.
 Unresolved defects return an escalation packet. See the
 [workflow contract](workflow.md#human-questions-and-escalation) for question,

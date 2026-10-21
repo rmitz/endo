@@ -1,5 +1,6 @@
 // Purpose: Defines pending questions and user replies independently of execution.
 import { Schema } from "effect";
+import { AgentPromptModel } from "@openchart/server/agent/contracts/agent-prompt-input";
 import type {
   ProviderQuestion,
   ProviderQuestionReply,
@@ -11,7 +12,28 @@ export const ID = Schema.String.check(Schema.isStartsWith("que_")).pipe(
 );
 export type ID = typeof ID.Type;
 
-/** Provider-neutral display data, already decoded by the native adapter. */
+/** Frozen discovered choices for a harness, native model and reasoning-effort form.
+ * The workflow host supplies this catalog; replies must match it. No resources are allocated.
+ * @example const view = ModelSelection.make({defaultModel, providers});
+ */
+export const ModelSelection = Schema.Struct({
+  defaultModel: AgentPromptModel,
+  providers: Schema.Array(
+    Schema.Struct({
+      id: AgentPromptModel.fields.providerID,
+      name: Schema.String,
+      models: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          name: Schema.String,
+          availableVariants: Schema.optional(Schema.Array(Schema.String)),
+        }),
+      ),
+    }),
+  ),
+});
+
+/** Provider-neutral display data plus optional host-owned model selection. */
 export const Question = Schema.Struct({
   id: Schema.String,
   header: Schema.String,
@@ -22,6 +44,7 @@ export const Question = Schema.Struct({
   multiple: Schema.Boolean,
   allowFreeform: Schema.Boolean,
   secret: Schema.Boolean,
+  modelSelection: Schema.optional(ModelSelection),
 }) satisfies Schema.Schema<ProviderQuestion>;
 
 /** Complete pending view; requests belong to the prompt's existing Session. */

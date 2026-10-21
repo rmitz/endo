@@ -14,6 +14,10 @@ export type QuestionReply = Workflow.QuestionReply;
  * Behavior: publishes the question batch to the parent session's question
  * store and suspends the calling fiber until the user submits answers or
  * skips the prompt. Does not acquire a child-agent concurrency permit.
+ * A batch of model questions may supply modelSelection defaults. The host snapshots
+ * discovered harness/model/effort choices; the app renders dependent menus and
+ * replies with JSON-encoded AgentPromptModel values in the ordinary answer strings.
+ * Model-selection batches cannot mix with ordinary text or choice questions.
  * Ownership: requires the host-provided {@link Workflow.Service} inside a
  * running workflow invocation; fails immediately with
  * {@link Workflow.ExecutionError} when called outside `Workflow.run`.

@@ -242,7 +242,7 @@ test("tRPC builds wire-safe Parts without admission; prompt owns composition val
         type: "workflow",
         description: expect.any(String),
         argumentHint:
-          "Usage: <maxRounds> <idea>. Max rounds must be a positive integer. Example: 2 Add offline support to the editor.",
+          "Usage: <maxRounds> <idea>. Choose role models interactively after submission. Max rounds must be a positive integer. Example: 2 Add offline support to the editor.",
         hints: ["$1", "$2"],
       },
     ]);

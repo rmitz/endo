@@ -3,7 +3,8 @@
 export * as Workflow from "./workflow";
 
 import type { AgentPromptInput } from "@openchart/server/agent/contracts/agent-prompt-input";
-import type { ProviderQuestionRequest } from "@openchart/models/provider-question";
+import type { ProviderQuestion } from "@openchart/models/provider-question";
+import type { AgentPromptModel } from "@openchart/server/agent/contracts/agent-prompt-input";
 import type { Reply } from "../question/types";
 import { Context, type Effect, type Schema } from "effect";
 import { ExecutionError } from "./errors";
@@ -11,7 +12,12 @@ import { ExecutionError } from "./errors";
 export { ExecutionError } from "./errors";
 
 /** One batch of structured questions a program asks the calling Session. */
-export type QuestionInput = ProviderQuestionRequest;
+export type QuestionInput = {
+  readonly questions: readonly (ProviderQuestion & {
+    /** Opens cascading harness/model/effort menus; the host supplies discovered choices. */
+    readonly modelSelection?: AgentPromptModel;
+  })[];
+};
 /** A submitted answer set or an explicit skip for one question batch. */
 export type QuestionReply = Reply;
 

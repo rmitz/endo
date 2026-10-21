@@ -2213,3 +2213,122 @@ export default defineWorkflow({
     }
   },
 );
+
+test.each(["skip", "cancel"] as const)(
+  "plan-implement role setup creates no children and cleans its pending questions on %s",
+  async (action) => {
+    const modelCalls: string[] = [];
+    const f = fixture(async (input) => {
+      const text = userText(input);
+      modelCalls.push(text);
+      // Only the root acknowledgement may run after a deliberate skip.
+      expect(text).not.toContain("You are Planner");
+      expect(workflowResult(input)).toMatchObject({
+        result: { status: "cancelled", reason: "model_selection_skipped" },
+      });
+      return answer("Model selection skipped; no agents started.");
+    });
+    try {
+      await f.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const { session, runs, runner, root } = yield* f.setup;
+            const questions = yield* Question.Service;
+            const parts = yield* buildCommand({
+              command: "plan-implement",
+              arguments: "1 Add a synthetic utility",
+            });
+            yield* runs.enqueue({
+              sessionID: root.id,
+              sessionIntentID: "interactive-plan-implement",
+              input: { ...prompt, parts },
+            });
+            const fiber = yield* runner
+              .run({ sessionID: root.id })
+              .pipe(Effect.forkChild);
+            const request = yield* Effect.gen(function* () {
+              for (let attempt = 0; attempt < 200; attempt++) {
+                const pending = (yield* questions.list(root.id)).find(
+                  (request) =>
+                    request.questions.some(
+                      (question) => question.id === "plannerA",
+                    ),
+                );
+                if (pending) return pending;
+                yield* Effect.sleep("10 millis");
+              }
+              return yield* Effect.die("Role selection never appeared");
+            });
+            expect(request.questions.map((question) => question.id)).toEqual([
+              "plannerA",
+              "plannerB",
+              "coordinator",
+              "implementer",
+              "verifier",
+            ]);
+            expect(request.questions[0]?.modelSelection).toMatchObject({
+              defaultModel: { providerID: CODEX, modelID: "gpt-6-astra" },
+              providers: [
+                {
+                  id: CODEX,
+                  name: "Codex",
+                  models: [
+                    { id: "gpt-6-astra", availableVariants: ["low", "high"] },
+                  ],
+                },
+              ],
+            });
+            expect(modelCalls).toEqual([]);
+            expect(
+              (yield* session.list({ parentId: root.id, limit: 10 })).items,
+            ).toEqual([]);
+            const waitingHistory = (yield* session.readTranscriptPage({
+              sessionID: root.id,
+              turnLimit: 10,
+            })).history;
+            const waitingTool = waitingHistory
+              .flatMap((message) => message.parts)
+              .find((part) => part.type === "tool");
+            expect(waitingTool?.state.status).toBe("running");
+            expect(waitingTool?.childSessionIds ?? []).toEqual([]);
+            if (action === "cancel") yield* Fiber.interrupt(fiber);
+            else {
+              yield* questions.reply({
+                requestID: request.id,
+                reply: { type: "skipped" },
+              });
+              yield* Fiber.join(fiber);
+              expect((yield* runs.list(root.id))[0]?.status).toBe("completed");
+              expect(modelCalls).toHaveLength(1);
+            }
+            expect(yield* questions.list(root.id)).toEqual([]);
+            expect(
+              (yield* session.list({ parentId: root.id, limit: 10 })).items,
+            ).toEqual([]);
+            if (action === "cancel") expect(modelCalls).toEqual([]);
+          }),
+        ).pipe(
+          Effect.provideService(Models.Service, {
+            ...f.services,
+            list: () =>
+              Effect.succeed([
+                {
+                  id: CODEX,
+                  name: "Codex",
+                  models: [
+                    {
+                      ...model,
+                      id: "gpt-6-astra",
+                      availableVariants: ["low", "high"],
+                    },
+                  ],
+                },
+              ]),
+          }),
+        ),
+      );
+    } finally {
+      await f.runtime.dispose();
+    }
+  },
+);

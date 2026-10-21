@@ -68,7 +68,11 @@ async function fixture() {
   }
 
   const question = await runtime.runPromise(Question.Service);
-  async function ask(sessionID: string, questionID = "mode") {
+  async function ask(
+    sessionID: string,
+    questionID = "mode",
+    modelSelection?: typeof Question.ModelSelection.Type,
+  ) {
     const controller = new AbortController();
     const result = runtime.runPromiseExit(
       question.ask({
@@ -85,6 +89,7 @@ async function fixture() {
             multiple: false,
             allowFreeform: false,
             secret: false,
+            ...(modelSelection ? { modelSelection } : {}),
           },
         ],
       }),
@@ -175,3 +180,65 @@ test("cold snapshots and reconnect recover pending questions; skipping settles o
   await expect.poll(() => parent.getSnapshot().state?.questions).toEqual([]);
   expect(Exit.isFailure(await first.result)).toBe(true);
 }, 10000);
+
+test("model menus survive HTTP snapshots and reject unknown models or reasoning efforts", async () => {
+  const f = await fixture();
+  const root = await f.runtime.runPromise(f.sessions.create({}));
+  const selection = {
+    defaultModel: { providerID: "opencode" as const, modelID: "private/model" },
+    providers: [
+      {
+        id: "opencode" as const,
+        name: "OpenCode",
+        models: [
+          {
+            id: "private/model",
+            name: "Private model",
+            availableVariants: ["low", "high"],
+          },
+        ],
+      },
+    ],
+  };
+  const ask = await f.ask(root.id, "planner", selection);
+  const parent = await f.observe(root.id);
+  expect(
+    parent.getSnapshot().state?.questions[0]?.questions[0]?.modelSelection,
+  ).toEqual(selection);
+  for (const model of [
+    "not-json",
+    JSON.stringify({ providerID: "opencode", modelID: "not-in-catalog" }),
+    JSON.stringify({ providerID: "codex", modelID: "private/model" }),
+    JSON.stringify({
+      providerID: "opencode",
+      modelID: "private/model",
+      selectedVariant: "invented",
+    }),
+  ]) {
+    await expect(
+      parent.replyQuestion(ask.request.id, {
+        type: "answered",
+        answers: { planner: [model] },
+      }),
+    ).rejects.toMatchObject({ data: { code: "BAD_REQUEST" } });
+    const questionService = await f.runtime.runPromise(Question.Service);
+    expect(
+      await f.runtime.runPromise(questionService.list(root.id)),
+    ).toHaveLength(1);
+  }
+  const reply = {
+    type: "answered" as const,
+    answers: {
+      planner: [
+        JSON.stringify({
+          providerID: "opencode",
+          modelID: "private/model",
+          selectedVariant: "high",
+        }),
+      ],
+    },
+  };
+  await parent.replyQuestion(ask.request.id, reply);
+  expect(await ask.result).toEqual(Exit.succeed(reply));
+  await expect.poll(() => parent.getSnapshot().state?.questions).toEqual([]);
+});

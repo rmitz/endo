@@ -2,9 +2,17 @@
 export * as Question from "./question";
 export * from "./types";
 
-import { Context, Deferred, Effect, Layer, Semaphore } from "effect";
+import {
+  Context,
+  Deferred,
+  Effect,
+  Layer,
+  Option,
+  Schema,
+  Semaphore,
+} from "effect";
 import * as Identifier from "@openchart/identifier";
-import type { ProviderQuestionRequest } from "@openchart/models/provider-question";
+import { AgentPromptModel } from "@openchart/server/agent/contracts/agent-prompt-input";
 import { StoreNotFound } from "@openchart/server/agent/errors";
 import { Publisher } from "@openchart/server/agent/publisher/publisher";
 import { delegateObservers } from "@openchart/server/agent/session/delegate-observers";
@@ -20,7 +28,7 @@ export interface Interface {
    * @example const answer = yield* question.ask({sessionID, questions});
    */
   readonly ask: (
-    input: ProviderQuestionRequest & { readonly sessionID: string },
+    input: Pick<Request, "questions" | "sessionID">,
   ) => Effect.Effect<Reply, StoreNotFound>;
   /**
    * Validates and settles exactly one request; stale replies fail with NotFoundError.
@@ -154,6 +162,24 @@ export const layer = Layer.effect(
               const values = Object.hasOwn(answers, question.id)
                 ? answers[question.id]
                 : undefined;
+              if (question.modelSelection && values?.length === 1) {
+                const decoded = Schema.decodeUnknownOption(
+                  Schema.fromJsonString(AgentPromptModel),
+                )(values[0]);
+                if (Option.isNone(decoded)) return true;
+                const selected = decoded.value;
+                const available = question.modelSelection.providers
+                  .find((provider) => provider.id === selected.providerID)
+                  ?.models.find((model) => model.id === selected.modelID);
+                if (
+                  !available ||
+                  (selected.selectedVariant !== undefined &&
+                    !available.availableVariants?.includes(
+                      selected.selectedVariant,
+                    ))
+                )
+                  return true;
+              }
               return (
                 !values?.length ||
                 (!question.multiple && values.length !== 1) ||
@@ -161,7 +187,8 @@ export const layer = Layer.effect(
                 values.some(
                   (value) =>
                     !value.trim() ||
-                    (!question.allowFreeform &&
+                    (!question.modelSelection &&
+                      !question.allowFreeform &&
                       !question.options.some(
                         (option) => option.label === value,
                       )),
